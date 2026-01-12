@@ -1,0 +1,22 @@
+[Unit]
+Description=DIFY Container Manager API Service
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/lixujun/ContainerManagerAPI/scripts
+ExecStart=/usr/bin/python3 /home/lixujun/ContainerManagerAPI/container_manager.py
+Restart=always
+RestartSec=10
+
+# 环境变量
+Environment="PYTHONUNBUFFERED=1"
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
