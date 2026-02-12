@@ -33,8 +33,6 @@ echo "=============================================="
 
 # 配置变量
 SHARED_DIR="$HOME/dify_data/user_$USER_ID"
-# IMAGE_NAME="bozhang359/matlabhub-matlab-parallel-extended:latest"
-# TAR_IMAGE_PATH="/home/zhangbo/workspace/edumanus/matlabhub-matlab-parallel-extended-latest.tar"
 
 # 根据用户ID计算端口
 BRIDGE_API_PORT=$((40000 + USER_ID))
@@ -50,47 +48,45 @@ echo "  - SSL端口: $HTTPS_PORT"
 echo "  - 数据目录: $SHARED_DIR"
 echo ""
 
-# # 1. 创建用户专属目录
-# echo "准备用户目录..."
-# mkdir -p "$SHARED_DIR/commands"
-# mkdir -p "$SHARED_DIR/results"  
-# mkdir -p "$SHARED_DIR/scripts"
-# mkdir -p "$SHARED_DIR/logs"
-# mkdir -p "$SHARED_DIR/command_queue"
-# mkdir -p "$SHARED_DIR/models"
-# mkdir -p "$SHARED_DIR/Documents/MATLAB"
-# chmod -R 777 "$SHARED_DIR"
-# echo "用户目录准备完成: $SHARED_DIR"
+# 端口占用处理：发现占用则 kill 监听进程（假设可 sudo）
+kill_listeners_on_port() {
+    local port="$1"
+    echo "检查端口 $port 占用情况..."
+    # 找到监听该端口的 PID（可能多个）
+    local pids=""
+    pids=$(sudo lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
 
-# # 复制必要的文件（如果是新用户）
-# # 检查是否需要初始化（通过检查标记文件）
-# if [ ! -f "$SHARED_DIR/.initialized" ]; then
-#     echo "初始化用户文件..."
-    
-#     # 复制matlab_library目录
-#     if [ -d "$HOME/matlab_shared/matlab_library" ]; then
-#         echo "  复制matlab_library..."
-#         cp -r "$HOME/matlab_shared/matlab_library" "$SHARED_DIR/" 2>/dev/null || true
-#         echo "  matlab_library复制完成"
-#     else
-#         echo "  未找到matlab_library目录"
-#     fi
-    
-#     # 复制scripts目录（完整复制，不仅仅是.m文件）
-#     if [ -d "$HOME/matlab_shared/scripts" ]; then
-#         echo "  复制scripts目录..."
-#         cp -r "$HOME/matlab_shared/scripts" "$SHARED_DIR/" 2>/dev/null || true
-#         echo "  scripts目录复制完成"
-#     else
-#         echo "  未找到scripts目录"
-#     fi
-    
-#     # 创建初始化标记
-#     touch "$SHARED_DIR/.initialized"
-#     echo "  用户文件初始化完成"
-# else
-#     echo "用户文件已存在，跳过初始化"
-# fi
+    if [ -z "$pids" ]; then
+        echo "  端口 $port 未被占用"
+        return 0
+    fi
+
+    echo "  端口 $port 被以下进程监听：$pids"
+    for pid in $pids; do
+        if [ -z "$pid" ]; then
+            continue
+        fi
+        echo "  PID $pid 详情："
+        ps -fp "$pid" || true
+    done
+
+    echo "  正在 kill 端口 $port 的监听进程..."
+    # 尝试优雅退出
+    sudo kill $pids 2>/dev/null || true
+    sleep 1
+    # 若仍在监听则强制杀
+    local pids_after=""
+    pids_after=$(sudo lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$pids_after" ]; then
+        echo "  仍有进程监听端口 $port，强制 kill -9：$pids_after"
+        sudo kill -9 $pids_after 2>/dev/null || true
+    fi
+}
+
+kill_dify() {
+    docker compose -f $DIFY_PATH/docker/docker-compose.yaml --profile weaviate -p dify_$USER_ID down
+    rm -rf $HOME/dify_data/user_$USER_ID
+}
 
 # 2. 检查现有容器
 echo ""
@@ -107,8 +103,7 @@ if docker ps | grep dify_$USER_ID; then
     fi
     
     echo "停止现有容器..."
-    docker compose -f $DIFY_PATH/docker/docker-compose.yaml --profile weaviate -p dify_$USER_ID down
-    rm -rf $HOME/dify_data/user_$USER_ID
+    kill_dify
 fi
 
 # 3. 检查并加载镜像
@@ -138,17 +133,15 @@ fi
 #     echo "本地镜像检查通过"
 # fi
 
-# 4. 检查端口占用
+# 4. 检查端口占用（如占用则 kill 监听进程）
 echo ""
 echo "检查端口占用..."
-if netstat -tln 2>/dev/null | grep -q ":$HTTP_PORT "; then
-    echo "警告: 端口 $HTTP_PORT 已被占用"
-    # 不退出，尝试继续（可能是同一用户的容器）
-fi
+kill_listeners_on_port "$HTTP_PORT"
+kill_listeners_on_port "$HTTPS_PORT"
+kill_listeners_on_port "$PLUGIN_DAEMON_PORT"
+kill_listeners_on_port "$WS_SERVER_PORT"
 
-if netstat -tln 2>/dev/null | grep -q ":$HTTPS_PORT "; then
-    echo "警告: 端口 $HTTPS_PORT 已被占用"
-fi
+CONTAINER_NAME="dify_${USER_ID}-api-1"
 
 # 5. 启动DIFY容器
 echo ""
@@ -159,20 +152,6 @@ MEMORY_LIMIT="4g"
 CPU_LIMIT="2"
 
 # TODO
-# docker run -d \
-#   --restart=unless-stopped \
-#   -p $WEB_PORT:8888 \
-#   -p $WS_PORT:9001 \
-#   --shm-size=4G \
-#   --memory=$MEMORY_LIMIT \
-#   --cpus=$CPU_LIMIT \
-#   --name "$CONTAINER_NAME" \
-#   -v "$SHARED_DIR:/home/matlab/shared" \
-#   -e MW_CONTEXT_TAGS=MATLAB:SIMULINK:DOCKERHUB:V1 \
-#   -e MLM_LICENSE_FILE=27000@matlab.cic.tsinghua.edu.cn \
-#   -e USER_ID=$USER_ID \
-#   "$IMAGE_NAME" -browser > "$SHARED_DIR/logs/container.log" 2>&1
-
 VOLUME_PATH=$HOME/dify_data/user_${USER_ID}
 if [ ! -d $VOLUME_PATH ]; then
     mkdir -p $VOLUME_PATH
@@ -197,23 +176,43 @@ CSP_WHITELIST="http://aicosmos.ai:* http://ai-cosmos.ai:* https://aicosmos.ai:* 
 ALLOW_EMBED=true \
 docker compose -f docker-compose.yaml --profile weaviate -p dify_$USER_ID up -d
 if [ $PASSWORD ]; then
+    echo "进行初始用户设置..."
     dify_api_id=`docker ps | grep dify_${USER_ID}-api-1 | awk '{print $1}'`
     sleep 20
-    # docker exec -it "$dify_api_id" flask create-tenant --email "$EMAIL" --name temp-user --language zh-Hans
-    # docker exec -it "$dify_api_id" flask reset-password --email "$EMAIL" --new-password "$PASSWORD" --password-confirm "$PASSWORD"
-    curl -X POST http://localhost:$HTTP_PORT/console/api/setup -H "Content-Type: application/json" -d '{"email":"'$EMAIL'","name":"lixj","password":"'$PASSWORD'"}'
+    # 检测 setup 返回必须是 {"result": "success"}，否则 sleep 1s 重试
+    SETUP_RETRY=0
+    SETUP_MAX_RETRIES=60
+    while [ $SETUP_RETRY -lt $SETUP_MAX_RETRIES ]; do
+        resp=$(
+            curl -sS -X POST "http://localhost:$HTTP_PORT/console/api/setup" \
+              -H "Content-Type: application/json" \
+              -d '{"email":"'"$EMAIL"'","name":"lixj","password":"'"$PASSWORD"'"}' \
+              || true
+        )
+
+        if echo "$resp" | grep -q '^{"result": "success"}$'; then
+            echo "DIFY setup success"
+            break
+        fi
+
+        SETUP_RETRY=$((SETUP_RETRY + 1))
+        echo "DIFY setup not ready/failed (try $SETUP_RETRY/$SETUP_MAX_RETRIES): $resp"
+        sleep 1
+    done
+
+    if [ $SETUP_RETRY -eq $SETUP_MAX_RETRIES ]; then
+        echo "DIFY setup failed after retries. Last response: $resp"
+        kill_dify
+        exit 1
+    fi
 fi
 cd $cur_path
-
-# 6. 等待服务启动
-echo "等待DIFY服务启动..."
-# sleep 10
 
 # 7. 健康检查
 echo ""
 echo "服务健康检查..."
 RETRY_COUNT=0
-MAX_RETRIES=12
+MAX_RETRIES=6
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     if curl -k https://localhost:$HTTPS_PORT > /dev/null 2>&1; then
@@ -232,6 +231,7 @@ if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
     docker ps -f name="$CONTAINER_NAME"
     echo "容器日志："
     docker logs "$CONTAINER_NAME" --tail 20
+    kill_dify
     exit 1
 fi
 
