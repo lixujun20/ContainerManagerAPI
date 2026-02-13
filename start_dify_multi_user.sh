@@ -10,6 +10,14 @@ COSMOS_WS_HOST=ai-cosmos.ai:8090
 COSMOS_FRONTEND_PORT=3039
 COSMOS_FRONTEND_HOST=$HOST_IP:$COSMOS_FRONTEND_PORT
 
+# 从.env中读取覆盖
+if [ -f ".env" ]; then
+    export $(grep -v '^#' ".env" | xargs)
+fi
+
+echo "使用DIFY路径: $DIFY_PATH"
+exit 0
+
 # 检查参数
 if [[ $# -ne 1 ]] && [[ $# -ne 2 ]]; then
     echo "用法: $0 <用户ID (1-100)> [password]"
